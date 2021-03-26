@@ -1,0 +1,163 @@
+# this is the part that analyzes the models once they are created
+# make sure to allow enough time for swissmodel to create the models
+# before running this part of the program
+import urllib.request
+import selenium
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+import json
+import shutil
+import pathlib
+import pandas as pd
+from collections import Counter
+import time
+import os
+import numpy as np
+import contextlib
+# requirements - valid chromedriver
+# Req: protein accession codes in .csv file
+proteinCSV = 'ProteinListForSimulation.csv' # set path to protein .csv here
+chromepath = pathlib.WindowsPath('chromedriver.exe') # set path to chromedriver here
+chrome_options = webdriver.chrome.options.Options()
+# download path: change path to desired download location
+prefs = {'download.default_directory':'/Users/TNT/Downloads/pythonProject1/PDB_files'} # second part is for filepath for .pdb files
+chrome_options.add_experimental_option('prefs', prefs)
+
+
+def json_grep(URL):
+    # internal method to extract sspro8 values from JSON file
+    with urllib.request.urlopen(URL + '.json') as f:
+        protein_json = f.read().decode('utf-8')
+        x = json.loads(protein_json)
+        qmean = x['qmean_global']['qmean4_z_score']
+        return x['targets'][0]['templates'][0]['annotation']['sspro'], qmean
+
+
+def pdb_grep(url_code, acc_code):
+    # internal method to get .pdb file
+    # https://swissmodel.expasy.org/assess/ENTER_CODE/01/uploaded url for downloading pdb file
+    # gets the gmqe from the created
+    # .pdb file
+    web_page = 'https://swissmodel.expasy.org/assess/' + url_code + '/01/uploaded'
+    filename = acc_code + '.pdb'
+    file = os.path.join(os.getcwd(), 'PDB_files', filename)
+    gmqe_value = -1
+    try:
+        with urllib.request.urlopen(web_page) as response, open(file, 'wb') as out_file:
+            shutil.copyfileobj(response, out_file)
+    #urllib.request.urlretrieve(web_page, file)
+    except urllib.error.HTTPError:
+        pass
+    try:
+        with open(file) as f:
+            x = 'REMARK   3  GMQE    '
+            lines = f.readlines()
+            gmqe_value = lines[94].strip(x)
+            gmqe_value.strip()
+            try:
+                gmqe_value = float(gmqe_value)
+            except ValueError:
+                gmqe_value = -1
+    except FileNotFoundError:
+        pass
+    return gmqe_value
+
+
+
+
+def sspro_analyze(sspro_code):
+    # internal method to analyze the extracted sspro8 secondary structure
+    # breaks the secondary structure into a list, then iterates through
+    # and augments the respective values until it reaches the end of the list
+    code_list = list(sspro_code[0])
+    beta_sheet = 0
+    alpha_helix = 0
+    random = 0
+    unknown = 0
+    for letter in code_list:
+        if letter == "H":
+            alpha_helix = alpha_helix + 1
+        elif letter == "E":
+            beta_sheet = beta_sheet + 1
+        elif letter =="X"
+            unknown = unknown + 1
+        else:
+            random = random + 1
+    return alpha_helix, beta_sheet, random, unknown
+
+
+
+def get_gmqe(accession_id):
+    # internal method to get the accession id of a file
+    with open('PDB_files/' + accession_id + '.pdb') as file:
+        x = 'REMARK   3  GMQE    '
+        lines = file.readlines()
+        gmqe = lines[94].strip(x)
+        gmqe.strip()
+        try:
+            gmqe = float(gmqe)
+        except ValueError:
+            qmqe = -1
+        return gmqe
+
+
+def get_model(web_driver, url_code):
+    # internal method to download the .pdb file
+    web_driver.get('https://swissmodel.expasy.org/interactive/' + url_code +'/models')
+    web_driver.implicitly_wait(4)
+    web_driver.find_element_by_partial_link_text('Structure').click()
+    web_driver.implicitly_wait(4)
+    URL = web_driver.current_url
+    return URL
+
+
+if __name__ == "__main__":
+    # to track program runtime
+    start_time = time.time()
+    # creates selenium driver to access the website
+    driver = webdriver.Chrome(executable_path=chromepath, options=chrome_options)
+    # creating a dataframe from the .csv file
+    df = pd.read_csv(proteinCSV, index_col=False)
+    # for getting the first un-analyzed index
+    data = df.loc[df.Helix.isna()]
+    index_value = data.first_valid_index()
+    r = range(0, len(data))
+    for i in r:
+        web_code = data.at[(i + index_value), 'WebCode']
+        if web_code != '-':
+            try:
+                # trying to access model from webpage
+                x = get_model(driver, web_code)
+            except selenium.common.exceptions.NoSuchElementException:
+                # if it does not exist, then -1 is added under helix as an indicator
+                df.at[(i + index_value), 'Helix'] = -1
+                continue
+            # waiting to allow webpage to load
+            driver.implicitly_wait(.5)
+            # more load time
+            time.sleep(.2)
+            # set acc_id to hold the accession id
+            acc_id = data.at[(i + index_value), 'AccessionID']
+            # GMQE will be a tuple with values  alpha_helix, beta_sheet, turn, random
+            GMQE = pdb_grep(web_code, acc_id)
+            # load time
+            time.sleep(.2)
+            # holding value from JSON file
+            json_values = json_grep(x)
+            # analyze sspro8 values from JSON file
+            secondary_values = sspro_analyze(json_values)
+            # update dataframe with analyzed values
+            df.at[(i + index_value), 'Helix'] = secondary_values[0]
+            df.at[(i + index_value), 'Beta'] = secondary_values[1]
+            df.at[(i + index_value), 'Random'] = secondary_values[2]
+            df.at[(i+ index_value), 'Unknown'] = secondary_values[3]
+            df.at[(i + index_value), 'qmean'] = json_values[1]
+            df.at[(i + index_value), 'gmqe'] = GMQE
+            df.to_csv('ProteinListForSimulation.csv', index=False)
+            # saves in .csv file each iteration to avoid analyzing redundantly
+        else:
+            # if the webcode == '-' then the protein was not created
+            # this will put an out of range value as an indicator
+            df.at[(i + index_value), 'Helix'] = -1
+    # displays program run time
+    print("--- %s seconds ---" % (time.time() - start_time))

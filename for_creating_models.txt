@@ -1,0 +1,120 @@
+import pandas as pd
+import time
+import selenium
+from selenium import webdriver
+import os
+import pathlib
+from selenium.webdriver.common.action_chains import ActionChains
+from urllib.parse import urlparse
+# requirements: updated python, chromedriver, csv file with accession codes
+# to store initial csv file for analysis
+initcsvfile = '' # update to have desired filepath
+proteinCSV = 'ProteinListForSimulation.csv'
+# to access chromedriver
+chromepath = pathlib.WindowsPath('chromedriver.exe')
+chrome_options = webdriver.ChromeOptions()
+
+def protein_from_csv(filename, rowValue):
+    # internal method for making data frame from csv file
+    data = pd.read_csv(filename)
+    return data.at[rowValue, data.columns[0]]
+
+
+def login(web_driver):
+    # internal method to login to the swissmodel website
+    pwd = '7MGm9Z'
+    user_name = 'cpm.ndsu@gmail.com'
+    web_driver.get('https://swissmodel.expasy.org/')
+    web_driver.find_element_by_css_selector("a[onclick^='showLogin();']").click()
+
+    web_driver.implicitly_wait(10)
+    form = web_driver.find_element_by_id("loginForm")
+
+    form.find_element_by_name('username').send_keys(user_name)
+    form.find_element_by_name('password').send_keys(pwd)
+    web_driver.find_element_by_id('login_submit_button').click()
+    time.sleep(1)
+
+
+def create_model(web_driver, UNIPROT_Code):
+    # internal method
+    # using webdriver and the returned tuple from
+    # parse_fasta method, it enters the info into
+    # the forms on the swiss-model website
+    web_driver.get('https://swissmodel.expasy.org/interactive')
+    web_driver.implicitly_wait(4)
+    web_driver.find_element_by_name('target').send_keys(UNIPROT_Code)
+    web_driver.implicitly_wait(2)
+    web_driver.find_element_by_id('validateInputButton').click()
+    web_driver.implicitly_wait(3)
+    URL = web_driver.current_url
+    try:
+        action = webdriver.ActionChains(web_driver)
+        element = web_driver.find_element_by_id('buildButton')
+        action.move_to_element(element)
+        action.click().perform()
+        ra = range(1, 5)
+        for item in ra:
+            web_driver.find_element_by_id('buildButton').click()
+            web_driver.implicitly_wait(.5)
+            if web_driver.current_url != URL:
+                break
+
+    # in case pop-up for similar proteins comes up
+    except selenium.common.exceptions.ElementClickInterceptedException:
+        web_driver.find_element_by_id('close').click()
+        action.perform()
+
+
+def url_stripper(url_string):
+    # this will return the code from the webpage
+    # if the value was not created, it will return
+    # NULL
+    y = urlparse(url_string)
+    g = y.path.split('/interactive/')
+    try:
+        g = g[1].split('/models/')
+        g = g[0]
+    except IndexError:
+        g = '-'
+    return g
+
+
+if __name__ == "__main__":
+    # to track runtime
+    start_time = time.time()
+    # create data frame from .csv file
+    if os.file.exists(proteinCSV):
+        df = pd.read_csv(proteinCSV, index_col=False)
+    else:
+        df = pd.read_csv(initcsvfile, index_col=False)
+    # begins at first unanalyzed item in case
+    # program is interrupted
+    data = df.loc[df.WebCode.isna()]
+    r = range(0, len(data))
+    # variable to store URL
+    url = ''
+    # to access .csv file with accession codes
+    prot_path = os.path.join(os.getcwd(), proteinCSV)
+    # create selenium driver object to access SwissModel
+    driver = webdriver.Chrome(chromepath)
+    # call login method
+    login(driver)
+    # iterate through dataframe and store values
+    # to access the models
+    index_value = data.first_valid_index()
+    for i in r:
+        x = data.at[(i+index_value), 'AccessionID']
+        try:
+            create_model(driver, x)
+        except:
+            pass
+        # wait to let webpage load
+        driver.implicitly_wait(3)
+        url = driver.current_url
+        WebCode = url_stripper(url)
+        # saving code from webpage to dataframe
+        df.loc[i+index_value, 'WebCode'] = WebCode
+        # save dataframe to file
+        df.to_csv('ProteinListForSimulation.csv', index=False)
+
